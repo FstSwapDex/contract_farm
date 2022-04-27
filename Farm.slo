@@ -1310,7 +1310,7 @@ contract FarmReward is BEP20('FarmReward Token', 'FRT') {
         address sender,
         address recipient,
         uint256 amount
-    ) public override onlyOwner returns (bool) {
+    ) public override returns (bool) {
         super.transferFrom(sender, recipient, amount);
         _moveDelegates(_delegates[sender], _delegates[recipient], amount);
         return true;
