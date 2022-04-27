@@ -542,6 +542,65 @@ library SafeBEP20 {
     }
 }
 
+/**
+ * @dev Contract module that helps prevent reentrant calls to a function.
+ *
+ * Inheriting from `ReentrancyGuard` will make the {nonReentrant} modifier
+ * available, which can be applied to functions to make sure there are no nested
+ * (reentrant) calls to them.
+ *
+ * Note that because there is a single `nonReentrant` guard, functions marked as
+ * `nonReentrant` may not call one another. This can be worked around by making
+ * those functions `private`, and then adding `external` `nonReentrant` entry
+ * points to them.
+ *
+ * TIP: If you would like to learn more about reentrancy and alternative ways
+ * to protect against it, check out our blog post
+ * https://blog.openzeppelin.com/reentrancy-after-istanbul/[Reentrancy After Istanbul].
+ */
+abstract contract ReentrancyGuard {
+    // Booleans are more expensive than uint256 or any type that takes up a full
+    // word because each write operation emits an extra SLOAD to first read the
+    // slot's contents, replace the bits taken up by the boolean, and then write
+    // back. This is the compiler's defense against contract upgrades and
+    // pointer aliasing, and it cannot be disabled.
+
+    // The values being non-zero value makes deployment a bit more expensive,
+    // but in exchange the refund on every call to nonReentrant will be lower in
+    // amount. Since refunds are capped to a percentage of the total
+    // transaction's gas, it is best to keep them low in cases like this one, to
+    // increase the likelihood of the full refund coming into effect.
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() public {
+        _status = _NOT_ENTERED;
+    }
+
+    /**
+     * @dev Prevents a contract from calling itself, directly or indirectly.
+     * Calling a `nonReentrant` function from another `nonReentrant`
+     * function is not supported. It is possible to prevent this from happening
+     * by making the `nonReentrant` function external, and making it call a
+     * `private` function that does the actual work.
+     */
+    modifier nonReentrant() {
+        // On the first call to nonReentrant, _notEntered will be true
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+
+        _;
+
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
+}
+
 // 
 /*
  * @dev Provides information about the current execution context, including the
@@ -711,7 +770,7 @@ contract BEP20 is Context, IBEP20, Ownable {
     /**
      * @dev Returns the token decimals.
      */
-    function decimals() public override view returns (uint8) {
+    function decimals() public override virtual view returns (uint8) {
         return _decimals;
     }
 
@@ -744,7 +803,7 @@ contract BEP20 is Context, IBEP20, Ownable {
      * - `recipient` cannot be the zero address.
      * - the caller must have a balance of at least `amount`.
      */
-    function transfer(address recipient, uint256 amount) public override returns (bool) {
+    function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
         _transfer(_msgSender(), recipient, amount);
         return true;
     }
@@ -784,7 +843,7 @@ contract BEP20 is Context, IBEP20, Ownable {
         address sender,
         address recipient,
         uint256 amount
-    ) public override returns (bool) {
+    ) public override virtual returns (bool) {
         _transfer(sender, recipient, amount);
         _approve(
             sender,
@@ -953,7 +1012,6 @@ contract BEP20 is Context, IBEP20, Ownable {
 
 // FON with Governance.
 contract FON is BEP20('Fonvity Token', 'FON') {
-    /// @notice Creates `_amount` token to `_to`. Must only be called by the owner (Farm).
     uint nextMint;
     uint[] amounts = [
         111 * 1e6 * 1e18, 
@@ -974,6 +1032,21 @@ contract FON is BEP20('Fonvity Token', 'FON') {
         _moveDelegates(address(0), _delegates[to], amount);
         nextMint = now.add(86400 * 365);
         mintIndex = mintIndex + 1;
+    }
+    
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        super.transfer(recipient, amount);
+        _moveDelegates(_delegates[_msgSender()], _delegates[recipient], amount);
+        return true;
+    }
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) public override returns (bool) {
+        super.transferFrom(sender, recipient, amount);
+        _moveDelegates(_delegates[sender], _delegates[recipient], amount);
+        return true;
     }
 
     // Copied and modified from YAM code:
@@ -1225,8 +1298,23 @@ contract FarmReward is BEP20('FarmReward Token', 'FRT') {
 
     function burn(address _from ,uint256 _amount) public onlyOwner {
         _burn(_from, _amount);
-        _moveDelegates(address(0), _delegates[_from], _amount);
+        _moveDelegates(_delegates[_from], address(0), _amount);
     }
+
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        super.transfer(recipient, amount);
+        _moveDelegates(_delegates[_msgSender()], _delegates[recipient], amount);
+        return true;
+    }
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) public override onlyOwner returns (bool) {
+        super.transferFrom(sender, recipient, amount);
+        _moveDelegates(_delegates[sender], _delegates[recipient], amount);
+        return true;
+    }   
 
     // The FONVITY TOKEN!
     FON public fonvity;
@@ -1487,7 +1575,7 @@ contract FarmReward is BEP20('FarmReward Token', 'FRT') {
 // distributed and the community can show to govern itself.
 //
 // Have fun reading it. Hopefully it's bug-free. God bless.
-contract Farm is Ownable {
+contract Farm is Ownable, ReentrancyGuard {
     using SafeMath for uint256;
     using SafeBEP20 for IBEP20;
 
@@ -1533,12 +1621,15 @@ contract Farm is Ownable {
     PoolInfo[] public poolInfo;
     // Info of each user that stakes LP tokens.
     mapping (uint256 => mapping (address => UserInfo)) public userInfo;
+    // Duplicate pool check
+    mapping (address => bool) public poolAdded;
     // Total allocation poitns. Must be the sum of all allocation points in all pools.
     uint256 public totalAllocPoint = 0;
     // The block number when FONVITY mining starts.
     uint256 public startBlock;
 
     event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
+    event UpdateMultiplier(uint256 multiplier);
     event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
     event EmergencyWithdraw(address indexed user, uint256 indexed pid, uint256 amount);
 
@@ -1557,8 +1648,15 @@ contract Farm is Ownable {
         startBlock = _startBlock;
     }
 
+    modifier validatePoolByPid(uint256 _pid) {
+        require (_pid < poolInfo.length , "Pool does not exist") ;
+        _;
+    }
+
     function updateMultiplier(uint256 multiplierNumber) public onlyOwner {
+        massUpdatePools();
         BONUS_MULTIPLIER = multiplierNumber;
+        emit UpdateMultiplier(multiplierNumber);
     }
 
     function poolLength() external view returns (uint256) {
@@ -1568,6 +1666,8 @@ contract Farm is Ownable {
     // Add a new lp to the pool. Can only be called by the owner.
     // XXX DO NOT add the same LP token more than once. Rewards will be messed up if you do.
     function add(uint256 _allocPoint, IBEP20 _lpToken, bool _withUpdate) public onlyOwner {
+        require(!poolAdded[address(_lpToken)], "duplicate poll");
+        poolAdded[address(_lpToken)] = true;
         if (_withUpdate) {
             massUpdatePools();
         }
@@ -1582,7 +1682,7 @@ contract Farm is Ownable {
     }
 
     // Update the given pool's FONVITY allocation point. Can only be called by the owner.
-    function set(uint256 _pid, uint256 _allocPoint, bool _withUpdate) public {
+    function set(uint256 _pid, uint256 _allocPoint, bool _withUpdate) public validatePoolByPid(_pid) {
         require(owner() == _msgSender() || daoaddr == _msgSender(), 'Ownable: caller is not the owner');
         if (_withUpdate) {
             massUpdatePools();
@@ -1597,7 +1697,7 @@ contract Farm is Ownable {
     }
 
     // View function to see pending FONs on frontend.
-    function pendingFonvity(uint256 _pid, address _user) external view returns (uint256) {
+    function pendingFonvity(uint256 _pid, address _user) external validatePoolByPid(_pid) view returns (uint256) {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][_user];
         uint256 accFonvityPerShare = pool.accFonvityPerShare;
@@ -1620,7 +1720,7 @@ contract Farm is Ownable {
 
 
     // Update reward variables of the given pool to be up-to-date.
-    function updatePool(uint256 _pid) public {
+    function updatePool(uint256 _pid) public validatePoolByPid(_pid) {
         PoolInfo storage pool = poolInfo[_pid];
         if (block.number <= pool.lastRewardBlock) {
             return;
@@ -1633,13 +1733,14 @@ contract Farm is Ownable {
         uint256 multiplier = getMultiplier(pool.lastRewardBlock, block.number);
         uint256 fonvityReward = multiplier.mul(fonvityPerBlock).mul(pool.allocPoint).div(totalAllocPoint);
         // devaddr got 15%
-        frt.safeFonvityTransfer(devaddr, fonvityReward.mul(17647058823529413).div(1e17));
-        pool.accFonvityPerShare = pool.accFonvityPerShare.add(fonvityReward.mul(1e12).div(lpSupply));
+        uint256 devReward = fonvityReward.mul(15).div(100);
+        frt.safeFonvityTransfer(devaddr, devReward);
+        pool.accFonvityPerShare = pool.accFonvityPerShare.add(fonvityReward.sub(devReward).mul(1e12).div(lpSupply));
         pool.lastRewardBlock = block.number;
     }
 
     // Deposit LP tokens to Farm for FONVITY allocation.
-    function deposit(uint256 _pid, uint256 _amount) public {
+    function deposit(uint256 _pid, uint256 _amount) public validatePoolByPid(_pid) nonReentrant {
 
         require (_pid != 0, 'deposit FONVITY by staking');
 
@@ -1661,7 +1762,7 @@ contract Farm is Ownable {
     }
 
     // Withdraw LP tokens from Farm.
-    function withdraw(uint256 _pid, uint256 _amount) public {
+    function withdraw(uint256 _pid, uint256 _amount) public validatePoolByPid(_pid) nonReentrant {
 
         require (_pid != 0, 'withdraw FONVITY by unstaking');
 
@@ -1682,7 +1783,7 @@ contract Farm is Ownable {
     }
 
     // Stake FON tokens to Farm
-    function enterStaking(uint256 _amount) public {
+    function enterStaking(uint256 _amount) public nonReentrant {
         PoolInfo storage pool = poolInfo[0];
         UserInfo storage user = userInfo[0][msg.sender];
         updatePool(0);
@@ -1703,7 +1804,7 @@ contract Farm is Ownable {
     }
 
     // Withdraw FON tokens from STAKING.
-    function leaveStaking(uint256 _amount) public {
+    function leaveStaking(uint256 _amount) public nonReentrant {
         PoolInfo storage pool = poolInfo[0];
         UserInfo storage user = userInfo[0][msg.sender];
         require(user.amount >= _amount, "withdraw: not good");
@@ -1723,13 +1824,16 @@ contract Farm is Ownable {
     }
 
     // Withdraw without caring about rewards. EMERGENCY ONLY.
-    function emergencyWithdraw(uint256 _pid) public {
+    function emergencyWithdraw(uint256 _pid) public validatePoolByPid(_pid) nonReentrant {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
-        pool.lpToken.safeTransfer(address(msg.sender), user.amount);
-        emit EmergencyWithdraw(msg.sender, _pid, user.amount);
+        if(_pid == 0) {
+            frt.burn(msg.sender, user.amount);
+        }
         user.amount = 0;
         user.rewardDebt = 0;
+        pool.lpToken.safeTransfer(address(msg.sender), user.amount);
+        emit EmergencyWithdraw(msg.sender, _pid, user.amount);
     }
 
     // Safe fonvity transfer function, just in case if rounding error causes pool to not have enough FONs.
