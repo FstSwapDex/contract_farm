@@ -1704,7 +1704,7 @@ contract Farm is Ownable, ReentrancyGuard {
         uint256 lpSupply = pool.lpToken.balanceOf(address(this));
         if (block.number > pool.lastRewardBlock && lpSupply != 0) {
             uint256 multiplier = getMultiplier(pool.lastRewardBlock, block.number);
-            uint256 fonvityReward = multiplier.mul(fonvityPerBlock).mul(pool.allocPoint).div(totalAllocPoint);
+            uint256 fonvityReward = multiplier.mul(fonvityPerBlock).mul(pool.allocPoint).div(totalAllocPoint).mul(85).div(100);
             accFonvityPerShare = accFonvityPerShare.add(fonvityReward.mul(1e12).div(lpSupply));
         }
         return user.amount.mul(accFonvityPerShare).div(1e12).sub(user.rewardDebt);
